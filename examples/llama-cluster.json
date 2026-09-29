@@ -1,0 +1,11 @@
+{
+  "name": "llama-cluster",
+  "replicas": 2,
+  "gpu": {
+    "model": "H100",
+    "count": 8,
+    "memoryGB": 80,
+    "topology": "NVLINK",
+    "strategy": "binpack"
+  }
+}

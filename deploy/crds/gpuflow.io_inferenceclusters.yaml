@@ -1,0 +1,170 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: inferenceclusters.gpuflow.io
+spec:
+  group: gpuflow.io
+  names:
+    kind: InferenceCluster
+    listKind: InferenceClusterList
+    plural: inferenceclusters
+    singular: inferencecluster
+    shortNames:
+      - ic
+      - infclust
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Desired
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Ready
+          type: integer
+          jsonPath: .status.replicas.ready
+        - name: GPUs
+          type: integer
+          jsonPath: .status.allocatedGPUs
+        - name: Model
+          type: string
+          jsonPath: .spec.model.name
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - replicas
+                - model
+                - runtime
+                - resources
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 0
+                  default: 1
+                model:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                runtime:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                resources:
+                  type: object
+                  required:
+                    - gpu
+                  properties:
+                    gpu:
+                      type: object
+                      required:
+                        - model
+                        - count
+                        - memoryGB
+                      properties:
+                        model:
+                          type: string
+                          enum:
+                            - H100
+                            - A100
+                            - L40S
+                        count:
+                          type: integer
+                          minimum: 1
+                        memoryGB:
+                          type: integer
+                          minimum: 1
+                scheduling:
+                  type: object
+                  properties:
+                    topology:
+                      type: string
+                      enum:
+                        - NVLINK
+                        - PCIE
+                        - NONE
+                    strategy:
+                      type: string
+                      enum:
+                        - first-fit
+                        - best-fit
+                        - binpack
+                        - topology-aware
+                availability:
+                  type: object
+                  properties:
+                    minHealthy:
+                      type: integer
+                      minimum: 0
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - PENDING
+                    - PROVISIONING
+                    - READY
+                    - DEGRADED
+                    - FAILED
+                    - DELETING
+                replicas:
+                  type: object
+                  properties:
+                    desired:
+                      type: integer
+                    ready:
+                      type: integer
+                    failed:
+                      type: integer
+                allocatedGPUs:
+                  type: integer
+                assignedNodes:
+                  type: array
+                  items:
+                    type: string
+                observedGeneration:
+                  type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

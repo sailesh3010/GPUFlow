@@ -1,0 +1,14 @@
+apiVersion: v2
+name: gpuflow
+description: Kubernetes-Native GPU Fleet Control Plane
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - gpu
+  - scheduler
+  - control-plane
+  - ai-infrastructure
+  - vllm
+maintainers:
+  - name: gpuflow-team

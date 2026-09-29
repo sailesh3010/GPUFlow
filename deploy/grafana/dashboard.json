@@ -1,0 +1,123 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 1,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "GPU Fleet Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 2,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Total GPUs",
+      "type": "stat",
+      "targets": [{ "expr": "sum(gpuflow_gpu_allocated + gpuflow_gpu_free)", "legendFormat": "Total GPUs" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Allocated GPUs",
+      "type": "stat",
+      "targets": [{ "expr": "sum(gpuflow_gpu_allocated)", "legendFormat": "Allocated" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 4,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Free GPUs",
+      "type": "stat",
+      "targets": [{ "expr": "sum(gpuflow_gpu_free)", "legendFormat": "Free" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "id": 5,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "unit": "percent" },
+      "title": "Fleet Utilization",
+      "type": "gauge",
+      "targets": [{ "expr": "avg(gpuflow_gpu_utilization)", "legendFormat": "Avg Utilization" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "id": 6,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Healthy Nodes",
+      "type": "stat",
+      "targets": [{ "expr": "sum(gpuflow_node_health{health=\"HEALTHY\"})", "legendFormat": "Healthy" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "id": 7,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Fragmentation Score",
+      "type": "gauge",
+      "targets": [{ "expr": "gpuflow_fragmentation_score", "legendFormat": "Score" }]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 8,
+      "title": "Scheduling & Control Plane Health",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 9,
+      "title": "GPU Utilization by Node",
+      "type": "timeseries",
+      "targets": [{ "expr": "gpuflow_gpu_utilization", "legendFormat": "{{node}}:{{gpu}}" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 6 },
+      "id": 10,
+      "title": "Scheduler Placement Decisions",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(gpuflow_scheduler_placement_total[1m])", "legendFormat": "Placements/sec" },
+        { "expr": "rate(gpuflow_scheduler_placement_failures[1m])", "legendFormat": "Failures/sec" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 6 },
+      "id": 11,
+      "title": "Automated Repairs & Reconciliations",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(gpuflow_reconciliation_total[1m])", "legendFormat": "Reconciliations/sec" },
+        { "expr": "gpuflow_repair_total", "legendFormat": "Repairs Total" }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["gpuflow", "gpu", "inference", "control-plane"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GPUFlow Fleet Dashboard",
+  "version": 1
+}

@@ -1,0 +1,27 @@
+apiVersion: gpuflow.io/v1
+kind: InferenceCluster
+
+metadata:
+  name: llama-cluster
+
+spec:
+  replicas: 2
+
+  model:
+    name: llama-70b
+
+  runtime:
+    name: vllm
+
+  resources:
+    gpu:
+      model: H100
+      count: 8
+      memoryGB: 80
+
+  scheduling:
+    topology: NVLINK
+    strategy: binpack
+
+  availability:
+    minHealthy: 1

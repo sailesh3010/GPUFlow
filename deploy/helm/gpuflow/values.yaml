@@ -1,0 +1,44 @@
+replicaCount: 1
+
+image:
+  repository: gpuflow/gpuflow
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+serviceAccount:
+  create: true
+  name: "gpuflow-controller"
+
+service:
+  type: ClusterIP
+  port: 8080
+  metricsPort: 9090
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  path: /metrics
+
+config:
+  profile: local
+  logLevel: info
+  scheduler:
+    strategy: binpack
+    defragThreshold: 0.35
+  health:
+    checkIntervalSeconds: 5
+    failureThreshold: 3
+  temporal:
+    hostPort: "temporal:7233"
+    namespace: "default"
+  kafka:
+    brokers: "kafka:9092"
+    topicPrefix: "gpuflow"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
