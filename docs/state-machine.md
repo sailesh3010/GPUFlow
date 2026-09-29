@@ -9,46 +9,49 @@ Every GPU compute node in GPUFlow is governed by a strict, validated finite stat
 ## 2. Comprehensive State Transition Diagram
 
 ```mermaid
-stateDiagram-v2
-    direction TB
+flowchart TD
+    subgraph Provisioning ["1. Bare-Metal Provisioning Lifecycle"]
+        S_DISC["DISCOVERED<br/><i>Node detected on fabric</i>"]
+        S_PROV["PROVISIONING<br/><i>Initiate PXE OS boot</i>"]
+        S_OS["OS_READY<br/><i>Ubuntu 22.04 LTS installed</i>"]
+        S_DRV["DRIVER_INSTALLING<br/><i>NVIDIA 535 driver</i>"]
+        S_CUDA["CUDA_READY<br/><i>CUDA 12.2 toolkit verified</i>"]
+        S_VAL["VALIDATING<br/><i>Run DCGM & NVLink tests</i>"]
+    end
 
-    %% Happy Path: Provisioning
-    state "Provisioning Lifecycle (Bare Metal to Production)" as ProvBlock {
-        [*] --> DISCOVERED : Node detected on fabric
-        DISCOVERED --> PROVISIONING : Initiate PXE boot
-        PROVISIONING --> OS_READY : Ubuntu 22.04 LTS installed
-        OS_READY --> DRIVER_INSTALLING : NVIDIA 535.129.03 driver
-        DRIVER_INSTALLING --> CUDA_READY : CUDA 12.2 toolkit verified
-        CUDA_READY --> VALIDATING : Run DCGM & NVLink bandwidth tests
-        VALIDATING --> READY : Validation PASS (8/8 GPUs healthy)
-    }
+    subgraph ActiveService ["2. Production Service"]
+        S_READY["READY<br/><i>Healthy & Schedulable</i>"]
+        S_ALLOC["ALLOCATED<br/><i>Workloads running</i>"]
+    end
 
-    %% Operational States
-    state "Active Service" as ActiveBlock {
-        READY --> ALLOCATED : Workload scheduled
-        ALLOCATED --> READY : All workloads completed/released
-    }
+    subgraph SelfHealing ["3. Automated Self-Healing Pipeline"]
+        S_DEG["DEGRADED<br/><i>Partial GPU/Thermal failure</i>"]
+        S_FAIL["FAILED<br/><i>XID 31 / Unreachable</i>"]
+        S_REP["REPAIRING<br/><i>BMC IPMI reset & repair</i>"]
+    end
 
-    %% Failure & Automated Remediation
-    state "Automated Self-Healing Pipeline" as FailureBlock {
-        READY --> DEGRADED : Partial GPU failure (1-7 GPUs)
-        ALLOCATED --> DEGRADED : GPU dropped off bus / ECC error
-        READY --> FAILED : Complete node failure / XID 31
-        ALLOCATED --> FAILED : Kernel panic / Network lost
-        DEGRADED --> FAILED : Cascade failure
-        DEGRADED --> REPAIRING : Trigger RepairNodeWorkflow
-        FAILED --> REPAIRING : Automated remediation
-        REPAIRING --> VALIDATING : IPMI powercycle & GPU reset
-    }
+    subgraph DecomLifecycle ["4. Decommission Lifecycle"]
+        S_DRAIN["DRAINING<br/><i>Evacuate active workloads</i>"]
+        S_DECOM["DECOMMISSIONING<br/><i>Hardware release</i>"]
+        S_TERM["DECOMMISSIONED<br/><i>Removed from fleet</i>"]
+    end
 
-    %% Decommission Lifecycle
-    state "Decommissioning" as DecomBlock {
-        READY --> DRAINING : Operator cordons node
-        ALLOCATED --> DRAINING : Evacuate active workloads
-        DRAINING --> DECOMMISSIONING : Hardware release
-        DECOMMISSIONING --> DECOMMISSIONED : Terminal state
-        DECOMMISSIONED --> [*]
-    }
+    S_DISC --> S_PROV --> S_OS --> S_DRV --> S_CUDA --> S_VAL --> S_READY
+
+    S_READY <--> |Workload Scheduled / Released| S_ALLOC
+
+    S_READY --> |Partial failure| S_DEG
+    S_ALLOC --> |GPU ECC error| S_DEG
+    S_READY --> |Node failure| S_FAIL
+    S_ALLOC --> |Kernel panic| S_FAIL
+
+    S_DEG --> |Auto-remediation| S_REP
+    S_FAIL --> |Auto-remediation| S_REP
+    S_REP --> |Revalidate GPUs| S_VAL
+
+    S_READY --> |Cordon node| S_DRAIN
+    S_ALLOC --> |Evacuate workloads| S_DRAIN
+    S_DRAIN --> S_DECOM --> S_TERM
 ```
 
 ---
