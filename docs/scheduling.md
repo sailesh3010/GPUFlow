@@ -1,103 +1,112 @@
-# GPU Scheduling
+# GPU Scheduling & Capacity Defragmentation
 
-## Overview
+## 1. Overview
 
-GPUFlow's scheduler places GPU workloads on nodes using configurable strategies. The scheduler considers GPU model, memory, topology, current allocations, and fragmentation when making placement decisions.
+GPUFlow features a specialized GPU scheduler designed for multi-GPU training and high-throughput inference (vLLM, TensorRT-LLM). It solves key challenges unique to GPU clusters:
+- **Interconnect Topology**: NVLink vs PCIe bus bandwidth penalties.
+- **Resource Granularity**: Multi-GPU co-location on same NUMA nodes.
+- **Capacity Fragmentation**: Free GPUs scattered across nodes preventing multi-GPU allocations.
 
-## Scheduling Strategies
+---
 
-### 1. First Fit
+## 2. Scheduling Decision Pipeline
 
-The simplest strategy. Returns the first node that satisfies all constraints.
+```mermaid
+flowchart TD
+    REQ["1. Incoming GPURequest<br/>(Model, Count, Memory, Topology, Strategy)"] --> FILTER["2. Candidate Filtering Phase"]
 
-- **Pros**: Fast, predictable
-- **Cons**: Can lead to unbalanced utilization
-- **Use case**: Development, testing
+    subgraph FilterPhase ["Candidate Filtering Rules"]
+        F1["Rule 1: Node State == READY or ALLOCATED"]
+        F2["Rule 2: Node Health == HEALTHY"]
+        F3["Rule 3: GPU Model == Request.Model (e.g. H100)"]
+        F4["Rule 4: GPU Memory >= Request.MemoryGB"]
+        F5["Rule 5: Available GPUs >= Request.Count"]
+        F6["Rule 6: Interconnect Topology Match (NVLink)"]
+    end
 
-### 2. Best Fit
+    FILTER --> F1 --> F2 --> F3 --> F4 --> F5 --> F6
+    F6 --> CANDIDATES{"Any Candidates<br/>Survive?"}
 
-Selects the node with the fewest available GPUs (tightest fit after placement).
+    CANDIDATES --> |No| ERR_REQUEUE["Reject with InsufficientCapacity<br/>Requeue in WorkQueue with Backoff"]
+    CANDIDATES --> |Yes| STRATEGY_SELECT{"3. Apply Selected Strategy"}
 
-- **Pros**: Reduces waste on individual nodes
-- **Cons**: Can leave many partially-used nodes
-- **Use case**: When minimizing per-node waste is important
+    subgraph Strategies ["Scoring Algorithms"]
+        S_FIRST["First-Fit<br/>Select first matching node"]
+        S_BEST["Best-Fit<br/>Select node with fewest available GPUs"]
+        S_BINPACK["BinPack<br/>Score = 0.8 * UtilAfter + 0.2 * Contiguity"]
+        S_TOPO["Topology-Aware<br/>Score = Base + 0.3 (NVLink) + Contiguity Weight"]
+    end
 
-### 3. Bin Pack
+    STRATEGY_SELECT --> |first-fit| S_FIRST
+    STRATEGY_SELECT --> |best-fit| S_BEST
+    STRATEGY_SELECT --> |binpack| S_BINPACK
+    STRATEGY_SELECT --> |topology-aware| S_TOPO
 
-Scores nodes by how full they will be after placement, preferring to pack workloads tightly.
+    S_FIRST --> SELECT_NODE["4. Select Highest Scored Node"]
+    S_BEST --> SELECT_NODE
+    S_BINPACK --> SELECT_NODE
+    S_TOPO --> SELECT_NODE
 
-**Scoring formula:**
-```
-score = utilization_after * 0.8 + contiguity * 0.2
-```
-
-Where:
-- `utilization_after = (allocated + requested) / total`
-- `contiguity = largest_contiguous_free_block / total_free`
-
-- **Pros**: Consolidates workloads, frees up entire nodes
-- **Cons**: May increase blast radius of node failure
-- **Use case**: Cost optimization, maximizing utilization
-
-### 4. Topology-Aware
-
-Extends bin packing with topology preferences (e.g., NVLink interconnects).
-
-**Scoring formula:**
-```
-score = base * 0.5 + topology_bonus + contiguity * weight
-```
-
-Where:
-- `topology_bonus = 0.3` if topology matches
-- `weight = 0.2` for NVLink, `0.1` otherwise
-
-- **Pros**: Optimizes for GPU-to-GPU communication latency
-- **Cons**: More restrictive, may reject otherwise viable nodes
-- **Use case**: Multi-GPU training, tensor parallelism
-
-## Candidate Filtering
-
-Before scoring, candidates are filtered by:
-1. ✅ Node is schedulable (READY or ALLOCATED + HEALTHY)
-2. ✅ GPU model matches request
-3. ✅ GPU memory meets minimum
-4. ✅ Topology matches (if specified)
-5. ✅ Sufficient available GPUs
-
-## Fragmentation
-
-### Definition
-
-Fragmentation occurs when free GPUs exist but cannot satisfy placement requirements because they are scattered across nodes.
-
-### Fragmentation Score
-
-```
-nodeFragScore = 1 - (largestContiguousFreeBlock / totalFreeGPUs)
+    SELECT_NODE --> ALLOCATE["5. Allocate Contiguous GPUs on Node"]
+    ALLOCATE --> UPDATE_TELEMETRY["6. Update Telemetry & Metrics<br/>(Utilization 30-79%, Temp 55-74°C)"]
+    UPDATE_TELEMETRY --> PLACED(["Workload Successfully Placed"])
 ```
 
-| Example | Free GPUs | Largest Block | Score |
-|---------|-----------|---------------|-------|
-| `--------` (all free) | 8 | 8 | 0.00 |
-| `AAAA----` | 4 | 4 | 0.00 |
-| `A-A-A---` | 5 | 3 | 0.40 |
-| `A-A-A-A-` | 4 | 1 | 0.75 |
+---
 
-### Fleet-Wide Score
+## 3. Fragmentation Analysis & Scoring
 
+Fragmentation occurs when total free GPUs across the fleet are sufficient, but no single node has enough contiguous GPUs to satisfy a request (e.g., an 8-GPU NVLink llama-70b replica).
+
+### Scoring Model:
+
+$$\text{nodeFragScore} = 1.0 - \frac{\text{largestContiguousFreeBlock}}{\text{totalFreeGPUs}}$$
+
+$$\text{fleetFragmentationScore} = \frac{\sum (\text{nodeFragScore}_i \times \text{freeGPUs}_i)}{\sum \text{freeGPUs}_i}$$
+
+```mermaid
+graph TD
+    subgraph Optimal ["Ideal Node: Score = 0.00"]
+        O_GPUS["[ GPU 0: Alloc ] [ GPU 1: Alloc ] [ GPU 2: Free ] [ GPU 3: Free ] [ GPU 4: Free ] [ GPU 5: Free ] [ GPU 6: Free ] [ GPU 7: Free ]<br/>Total Free: 6 | Largest Contiguous Block: 6<br/><b>Score = 1 - (6/6) = 0.00</b>"]
+    end
+
+    subgraph Fragmented ["Fragmented Node: Score = 0.50"]
+        F_GPUS["[ GPU 0: Alloc ] [ GPU 1: Free ] [ GPU 2: Free ] [ GPU 3: Alloc ] [ GPU 4: Free ] [ GPU 5: Free ] [ GPU 6: Free ] [ GPU 7: Alloc ]<br/>Total Free: 5 | Largest Contiguous Block: 3 (GPUs 4-6)<br/><b>Score = 1 - (3/5) = 0.40</b>"]
+    end
+
+    subgraph MaximallyFragmented ["Scattered Node: Score = 0.75"]
+        M_GPUS["[ GPU 0: Alloc ] [ GPU 1: Free ] [ GPU 2: Alloc ] [ GPU 3: Free ] [ GPU 4: Alloc ] [ GPU 5: Free ] [ GPU 6: Alloc ] [ GPU 7: Free ]<br/>Total Free: 4 | Largest Contiguous Block: 1<br/><b>Score = 1 - (1/4) = 0.75</b>"]
+    end
 ```
-overallScore = Σ(nodeFragScore × nodeFreeGPUs) / totalFreeGPUs
+
+---
+
+## 4. Defragmentation Migration Planner
+
+The defragmentation engine analyzes active fleet allocations and calculates an optimal migration plan to consolidate fragmented nodes:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Admin as Operator / Optimizer
+    participant Defrag as Defrag Planner
+    participant Sched as Scheduler
+    participant Fleet as Fleet Simulator
+
+    Admin->>Defrag: POST /api/v1/optimization/plan
+    Defrag->>Sched: Read Fleet Fragmentation Score
+    Defrag->>Fleet: Inspect Node Workload Allocations
+
+    rect rgb(240, 248, 255)
+    Note over Defrag: 1. Sort nodes ascending by allocation (least loaded first)<br/>2. Source: gpu-node-04 (2 GPUs in use)<br/>3. Target: gpu-node-03 (6 GPUs in use, 2 GPUs free)
+    end
+
+    Defrag->>Defrag: Compute Migration Move (workload-3 from node-04 → node-03)
+    Defrag->>Defrag: Calculate Post-Defrag Metrics:<br/>Nodes Freed: 1 (gpu-node-04)<br/>Frag Before: 0.35 → Frag After: 0.05
+    Defrag-->>Admin: Return DefragPlan JSON
+
+    Admin->>Defrag: POST /api/v1/optimization/apply
+    Defrag->>Fleet: ReleaseGPUs(gpu-node-04, workload-3)
+    Defrag->>Fleet: AllocateGPUs(gpu-node-03, workload-3)
+    Fleet-->>Admin: Defragmentation Plan Applied (1 Node Freed Up)
 ```
-
-## Defragmentation
-
-The defrag planner generates migration plans to consolidate workloads:
-
-1. Sort nodes by utilization (ascending)
-2. For each lightly-loaded source node:
-   - Find a target with matching GPU model and sufficient capacity
-   - Plan workload migration from source to target
-3. Return plan with before/after metrics
-
-The planner never executes automatically — the plan must be reviewed and applied.

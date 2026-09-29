@@ -1,78 +1,90 @@
-# Failure Recovery
+# Failure Recovery & Automated Remediation
 
-## Failure Types
+## 1. Overview
 
-| Type | Severity | Auto-Recovery |
-|------|----------|---------------|
-| `GPU_FAILURE` | Warning/Critical | ✅ Degraded → Repair |
-| `DRIVER_FAILURE` | Critical | ✅ Fail all GPUs → Repair |
-| `NETWORK_FAILURE` | Critical | ✅ Node failure → Replace |
-| `TEMPERATURE_HIGH` | Warning | ✅ Throttle → Monitor |
-| `NODE_UNREACHABLE` | Critical | ✅ Replace node |
+In large GPU clusters, hardware degradation is a daily occurrence: NVLink errors, thermal throttling, uncorrectable double-bit ECC errors, and PCIe bus resets. GPUFlow handles failures autonomously through level-triggered health detection, event streaming, and durable self-healing workflows without human intervention.
 
-## Self-Healing Flow
+---
+
+## 2. Failure Severity & Auto-Recovery Matrix
+
+| Failure Type | Source / Metric | Severity | Automated Remediation Flow |
+| :--- | :--- | :--- | :--- |
+| `GPU_FAILURE` | DCGM fatal ECC error | High | Degrade node → Drain affected workload → BMC reset GPU → Revalidate |
+| `DRIVER_FAILURE` | NVIDIA XID 31 / 79 | Critical | Mark FAILED → Drain node → Reload kernel module / Power cycle |
+| `TEMPERATURE_HIGH` | GPU Temp > 88°C | Warning | Throttle utilization → Monitor → Degrade if sustained |
+| `NETWORK_FAILURE` | RoCE / InfiniBand drop | Critical | Cordon node → Evacuate replicas → Reschedule to spare |
+| `NODE_UNREACHABLE` | Heartbeat timeout (>30s) | Critical | Evict workloads → Provision replacement node via Temporal |
+
+---
+
+## 3. End-to-End Self-Healing Flow Diagram
 
 ```mermaid
 sequenceDiagram
-    participant Injector as Failure Injector
-    participant Fleet
-    participant Detector as Health Detector
-    participant Scheduler
-    participant Provider
+    autonumber
+    participant Chaos as Chaos Simulation / Fault Injector
+    participant Fleet as GPU Fleet Simulator
+    participant Kafka as Kafka Bus (health.events)
+    participant Detector as Health Monitor & Controller
+    participant Sched as GPU Scheduler
+    participant Temporal as Temporal Workflow Engine
+    participant Reconciler as Cluster Reconciler
 
-    Injector->>Fleet: FailNode("gpu-node-03")
-    Fleet->>Fleet: State → FAILED, Health → FAILED
-    
-    Note over Detector: Periodic health check
-    Detector->>Fleet: ListNodes()
-    Fleet-->>Detector: node-03 is FAILED
-    Detector->>Detector: Create HealthIssue(CRITICAL)
-    Detector->>Detector: Call remediation handler
-    
-    Note over Detector: Remediation begins
-    Detector->>Fleet: Drain workloads from node-03
-    Detector->>Provider: Provision replacement (node-05)
-    Provider->>Fleet: CreateNode → ProvisionNode lifecycle
-    Fleet-->>Provider: node-05 READY
-    
-    Detector->>Scheduler: Reschedule evicted workloads
-    Scheduler->>Fleet: AllocateGPUs(node-05, ...)
-    
-    Note over Fleet: Fleet restored to healthy state
+    Chaos->>Fleet: FailNode("gpu-node-03", "ECC uncorrectable error")
+    Fleet->>Fleet: TransitionNode("gpu-node-03" → FAILED)
+    Fleet->>Kafka: Publish(Event: NODE_FAILED, NodeID="gpu-node-03")
+
+    Kafka->>Detector: Consume(NODE_FAILED)
+    Detector->>Fleet: TransitionNode("gpu-node-03" → DEGRADED)
+    Note over Detector,Fleet: Phase 1: Immediate Cordon & Workload Evacuation
+    Detector->>Fleet: Drain workloads from "gpu-node-03"
+
+    Note over Detector,Sched: Phase 2: Capacity Discovery
+    Detector->>Sched: Search replacement capacity for 8 GPUs
+    Sched-->>Detector: Insufficient capacity on remaining nodes
+
+    Note over Detector,Temporal: Phase 3: Durable Provisioning Workflow
+    Detector->>Temporal: Execute(ProvisionNodeWorkflow, NodeID="gpu-node-05")
+    activate Temporal
+    Temporal->>Fleet: CreateNode("gpu-node-05", Model=A100, Count=8)
+    Temporal->>Fleet: Execute Activity: ProvisionOS (Ubuntu 22.04 LTS)
+    Temporal->>Fleet: Execute Activity: InstallDriver (NVIDIA 535)
+    Temporal->>Fleet: Execute Activity: InstallCUDA (CUDA 12.2)
+    Temporal->>Fleet: Execute Activity: ValidateGPU (DCGM Diagnostics)
+    Fleet-->>Temporal: Diagnostic Results: PASS
+    Temporal->>Fleet: TransitionNode("gpu-node-05" → READY)
+    Temporal-->>Detector: Replacement Node "gpu-node-05" is READY
+    deactivate Temporal
+
+    Note over Detector,Reconciler: Phase 4: Drift Resolution & Rescheduling
+    Detector->>Reconciler: Trigger Reconciliation for affected clusters
+    Reconciler->>Sched: Schedule evicted replicas onto "gpu-node-05"
+    Sched->>Fleet: AllocateGPUs("gpu-node-05", 8)
+    Fleet-->>Reconciler: GPUs Allocated successfully
+
+    Reconciler->>Reconciler: Clear Condition DriftDetected=False
+    Reconciler->>Kafka: Publish(Event: DRIFT_RESOLVED)
+    Note over Fleet: Fleet Restored to 100% HEALTHY
 ```
 
-## Recovery Steps
+---
 
-1. **Detection**: Health detector identifies FAILED/DEGRADED nodes
-2. **Issue Creation**: HealthIssue generated with type and severity
-3. **Remediation Trigger**: Remediation handler invoked
-4. **Workload Drain**: Active workloads evacuated from failed node
-5. **Replacement Provisioning**: New node created and provisioned through state machine
-6. **Validation**: GPU, CUDA, and network validation on replacement
-7. **Rescheduling**: Evicted workloads placed on new or existing nodes
-8. **Issue Cleared**: Health issue removed after recovery
+## 4. Idempotency & Retry Guarantees
 
-## Chaos Commands
+Every step in the remediation pipeline is protected against duplicate execution:
 
-```bash
-gpuflow chaos node-failure gpu-node-03     # Complete node failure
-gpuflow chaos gpu-failure gpu-node-02:gpu-04  # Single GPU failure (planned)
-gpuflow chaos network-failure gpu-node-01   # Network partition (planned)
-gpuflow chaos driver-failure gpu-node-04    # Driver crash (planned)
+```mermaid
+flowchart LR
+    REQ["Remediation Request<br/>(NodeID, CorrelationID)"] --> IDEMP_CHECK{"Idempotency Key<br/>Exists in History?"}
+
+    IDEMP_CHECK --> |Yes & COMPLETED| RETURN_CACHED["Return Cached Result<br/>(Skip Execution)"]
+    IDEMP_CHECK --> |Yes & RUNNING| ATTACH["Attach to Existing<br/>Workflow Execution"]
+    IDEMP_CHECK --> |No| RUN_ATTEMPT["Execute Activity with Timeout & Retries"]
+
+    RUN_ATTEMPT --> CHECK_ERR{"Attempt<br/>Succeeded?"}
+    CHECK_ERR --> |Yes| SAVE_CHECKPOINT["Persist Activity Checkpoint"]
+    CHECK_ERR --> |No & Retries < Max| BACKOFF["Wait Exponential Backoff<br/>(Initial: 10ms, Factor: 2.0)"]
+    BACKOFF --> RUN_ATTEMPT
+    CHECK_ERR --> |No & Retries Exceeded| ROLLBACK["Mark FAILED & Rollback<br/>Release Allocated Resources"]
 ```
-
-## Idempotency
-
-All recovery operations are idempotent:
-- `FailNode` on an already-failed node is safe
-- `RecoverNode` can be called multiple times
-- Provision with same node ID returns existing node
-- Deprovision of non-existent node returns success
-
-## Retry Behavior
-
-Failed provisioning steps are retried with the following approach:
-- Each step in the state machine can be independently retried
-- If a step exceeds retry limits, the node transitions to FAILED
-- Resources allocated during partial provisioning are released on rollback
-- Attempt number, error, and timestamp are recorded in state transitions
